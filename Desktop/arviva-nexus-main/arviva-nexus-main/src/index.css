@@ -1,0 +1,158 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Playful Pro — Light Mode */
+    --background: 0 0% 98%;
+    --foreground: 230 25% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 230 25% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 230 25% 15%;
+
+    --primary: 252 85% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 230 20% 94%;
+    --secondary-foreground: 230 20% 40%;
+
+    --muted: 230 15% 92%;
+    --muted-foreground: 230 10% 50%;
+
+    --accent: 340 82% 55%;
+    --accent-foreground: 0 0% 100%;
+
+    --success: 160 84% 39%;
+    --success-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 230 15% 88%;
+    --input: 230 15% 90%;
+    --ring: 252 85% 60%;
+
+    --radius: 0.75rem;
+
+    --info: 204 94% 50%;
+    --warn: 38 92% 50%;
+    --amber: 38 92% 50%;
+
+    --sidebar-background: 0 0% 99%;
+    --sidebar-foreground: 230 20% 40%;
+    --sidebar-primary: 252 85% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 252 85% 96%;
+    --sidebar-accent-foreground: 252 85% 40%;
+    --sidebar-border: 230 15% 90%;
+    --sidebar-ring: 252 85% 60%;
+  }
+
+  .dark {
+    /* Playful Pro — Dark Mode */
+    --background: 230 20% 7%;
+    --foreground: 220 15% 85%;
+
+    --card: 230 20% 10%;
+    --card-foreground: 220 15% 85%;
+
+    --popover: 230 20% 10%;
+    --popover-foreground: 220 15% 85%;
+
+    --primary: 252 85% 65%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 230 15% 15%;
+    --secondary-foreground: 220 10% 60%;
+
+    --muted: 230 12% 18%;
+    --muted-foreground: 220 8% 45%;
+
+    --accent: 340 82% 60%;
+    --accent-foreground: 0 0% 100%;
+
+    --success: 160 84% 39%;
+    --success-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 230 15% 20%;
+    --input: 230 15% 15%;
+    --ring: 252 85% 65%;
+
+    --info: 204 94% 55%;
+    --warn: 38 92% 55%;
+    --amber: 38 92% 55%;
+
+    --sidebar-background: 230 20% 7%;
+    --sidebar-foreground: 220 10% 60%;
+    --sidebar-primary: 252 85% 65%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 230 15% 13%;
+    --sidebar-accent-foreground: 220 15% 85%;
+    --sidebar-border: 230 12% 16%;
+    --sidebar-ring: 252 85% 65%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', sans-serif;
+  }
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted));
+    border-radius: 99px;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply bg-card/85 border border-border backdrop-blur-xl;
+  }
+
+  .glass-navbar {
+    @apply bg-background/95 border-b border-border backdrop-blur-xl;
+  }
+
+  .glass-float {
+    @apply bg-card/90 border border-border backdrop-blur-xl;
+    box-shadow: 0 12px 48px hsl(var(--primary) / 0.08);
+  }
+
+  .cyber-card {
+    @apply bg-card border border-border rounded-xl backdrop-blur-xl transition-colors;
+  }
+  .cyber-card:hover {
+    @apply border-primary/30;
+  }
+
+  .status-info { color: hsl(var(--info)); }
+  .status-warn { color: hsl(var(--warn)); }
+  .status-error { color: hsl(var(--accent)); }
+  .status-success { color: hsl(var(--success)); }
+
+  .btn-standard {
+    @apply px-3 py-1.5 rounded-xl text-[11px] font-mono font-medium transition-all;
+  }
+  .btn-standard:hover {
+    box-shadow: 0 0 12px hsl(var(--primary) / 0.2);
+  }
+}
