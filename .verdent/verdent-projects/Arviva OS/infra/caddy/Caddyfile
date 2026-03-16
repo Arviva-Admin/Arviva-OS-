@@ -1,0 +1,66 @@
+{
+	# Arviva OS 2026 — Caddy Edge Proxy
+	# Layer-7 rate limiting, auto-HTTPS, service routing
+	email admin@{$DOMAIN}
+}
+
+# Rate limiting is enforced by the Redis TokenBucket in the FastAPI layer (Block F).
+# The caddy:2.8-alpine image does not include the caddy-ratelimit plugin; directives
+# here use only the standard Caddy 2 module set.
+
+{$DOMAIN} {
+	# --- Nexus Dashboard (React SPA) ---
+	handle /dashboard* {
+		reverse_proxy nexus-frontend:80
+	}
+
+	# --- Windmill UI ---
+	handle /windmill* {
+		reverse_proxy windmill-server:8000
+	}
+
+	# --- Core API ---
+	handle /api* {
+		reverse_proxy api:8000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			lb_policy round_robin
+			health_uri /health
+			health_interval 10s
+			health_timeout 5s
+		}
+	}
+
+	# --- Prometheus metrics (internal only) ---
+	handle /metrics* {
+		@internal {
+			remote_ip 172.30.0.0/16 10.99.0.0/24
+		}
+		handle @internal {
+			reverse_proxy api:8000
+		}
+		respond "Forbidden" 403
+	}
+
+	# --- Security headers ---
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "DENY"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	encode gzip
+	log {
+		output file /data/caddy/access.log {
+			roll_size 100mb
+			roll_keep 5
+		}
+	}
+}
+
+# Internal health check endpoint (no TLS required)
+:2019 {
+	metrics
+}

@@ -1,0 +1,353 @@
+version: "3.9"
+
+# =============================================================================
+# ARVIVA OS 2026 — Full-Stack Orchestration
+# Hardware: i7 CPU | 128 GB DDR4/DDR5 RAM
+# Mandate: $0 API cost — local LLM fallback always active
+# =============================================================================
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+networks:
+  arviva-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+  arviva-wg:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_models:
+  caddy_data:
+  caddy_config:
+  windmill_data:
+  presidio_cache:
+  git_repo:
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # BLOCK A — EDGE PROXY (Caddy + Layer-7 rate limiting + auto-HTTPS)
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: arviva-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - arviva-internal
+    logging: *default-logging
+    depends_on:
+      - api
+      - nexus-frontend
+
+  # ---------------------------------------------------------------------------
+  # BLOCK A — LOCAL INTELLIGENCE (Ollama — Llama3 70B / DeepSeek-V3)
+  # Pinned to 48 GB of RAM; model weights stay warm in memory
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: arviva-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=8
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0:11434
+    deploy:
+      resources:
+        limits:
+          memory: 50G
+        reservations:
+          memory: 40G
+    networks:
+      - arviva-internal
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # BLOCK B — SEMANTIC MEMORY (PostgreSQL 16 + pgvector)
+  # shared_buffers=32GB | work_mem=512MB | halfvec embeddings
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: arviva-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: arviva
+      POSTGRES_USER: arviva
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    deploy:
+      resources:
+        limits:
+          memory: 40G
+        reservations:
+          memory: 34G
+    networks:
+      - arviva-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arviva -d arviva"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # BLOCK F — REDIS (Token Bucket rate-limiting via Lua scripts)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: arviva-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 4gb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --tcp-backlog 511
+      --hz 100
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 5G
+        reservations:
+          memory: 4G
+    networks:
+      - arviva-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # BLOCK C — ORCHESTRATION (Windmill — 50 dedicated workers)
+  # ---------------------------------------------------------------------------
+  windmill-server:
+    image: ghcr.io/windmill-labs/windmill:main
+    container_name: arviva-windmill-server
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://arviva:${POSTGRES_PASSWORD}@postgres:5432/arviva
+      BASE_URL: https://${DOMAIN}/windmill
+      RUST_LOG: info
+      NUM_WORKERS: 0
+      DISABLE_SERVER: false
+      METRICS_ADDR: "0.0.0.0:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - windmill_data:/tmp/windmill
+      - git_repo:/git
+    networks:
+      - arviva-internal
+    logging: *default-logging
+
+  windmill-worker-critical:
+    image: ghcr.io/windmill-labs/windmill:main
+    container_name: arviva-windmill-worker-critical
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://arviva:${POSTGRES_PASSWORD}@postgres:5432/arviva
+      MODE: worker
+      WORKER_GROUP: critical
+      NUM_WORKERS: 5
+      WORKER_TAGS: critical,guardrails,budget
+    depends_on:
+      - windmill-server
+    volumes:
+      - windmill_data:/tmp/windmill
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    networks:
+      - arviva-internal
+    logging: *default-logging
+
+  windmill-worker-realtime:
+    image: ghcr.io/windmill-labs/windmill:main
+    container_name: arviva-windmill-worker-realtime
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://arviva:${POSTGRES_PASSWORD}@postgres:5432/arviva
+      MODE: worker
+      WORKER_GROUP: realtime
+      NUM_WORKERS: 20
+      WORKER_TAGS: realtime,arbitrage,leads
+    depends_on:
+      - windmill-server
+    volumes:
+      - windmill_data:/tmp/windmill
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    networks:
+      - arviva-internal
+    logging: *default-logging
+
+  windmill-worker-bulk:
+    image: ghcr.io/windmill-labs/windmill:main
+    container_name: arviva-windmill-worker-bulk
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://arviva:${POSTGRES_PASSWORD}@postgres:5432/arviva
+      MODE: worker
+      WORKER_GROUP: bulk
+      NUM_WORKERS: 25
+      WORKER_TAGS: bulk,scraping,enrichment
+    depends_on:
+      - windmill-server
+    volumes:
+      - windmill_data:/tmp/windmill
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    networks:
+      - arviva-internal
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # BLOCK D — IMMUNOLOGICAL SYSTEM (Microsoft Presidio)
+  # ---------------------------------------------------------------------------
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    container_name: arviva-presidio-analyzer
+    restart: unless-stopped
+    environment:
+      GRPC_PORT: 3001
+    networks:
+      - arviva-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import grpc; ch=grpc.insecure_channel('localhost:3001'); grpc.channel_ready_future(ch).result(timeout=5)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+
+  presidio-anonymizer:
+    image: mcr.microsoft.com/presidio-anonymizer:latest
+    container_name: arviva-presidio-anonymizer
+    restart: unless-stopped
+    environment:
+      GRPC_PORT: 3002
+    networks:
+      - arviva-internal
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # CORE API — FastAPI (all blocks wired here)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: arviva-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://arviva:${POSTGRES_PASSWORD}@postgres:5432/arviva
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: http://ollama:11434
+      WINDMILL_URL: http://windmill-server:8000
+      PRESIDIO_ANALYZER_URL: http://presidio-analyzer:3001
+      PRESIDIO_ANONYMIZER_URL: http://presidio-anonymizer:3002
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      WINDMILL_TOKEN: ${WINDMILL_TOKEN}
+      DOMAIN: ${DOMAIN}
+      GIT_REPO_PATH: /git
+      SECRET_KEY: ${SECRET_KEY}
+      ENVIRONMENT: production
+    volumes:
+      - git_repo:/git
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    networks:
+      - arviva-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # NEXUS DASHBOARD — React/Vite/Tailwind frontend
+  # ---------------------------------------------------------------------------
+  nexus-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: arviva-nexus
+    restart: unless-stopped
+    networks:
+      - arviva-internal
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # MESH NETWORKING — WireGuard VPN for internal agent isolation
+  # ---------------------------------------------------------------------------
+  wireguard:
+    image: linuxserver/wireguard:latest
+    container_name: arviva-wireguard
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
+      SERVERURL: ${DOMAIN}
+      SERVERPORT: 51820
+      PEERS: 10
+      PEERDNS: auto
+      INTERNAL_SUBNET: 10.99.0.0/24
+    volumes:
+      - ./infra/wireguard:/config
+    ports:
+      - "51820:51820/udp"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    networks:
+      - arviva-wg
+      - arviva-internal
+    logging: *default-logging
